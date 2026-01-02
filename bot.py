@@ -81,9 +81,9 @@ async def generate_full_report(output_channel):
     # Matches: "Pet: Casper ... Error" or "Failed"
     system_errors = await scan_channel(CHANNELS['system'], r"Pet:\s*(.*?)\s+.*(?:Error|Failed|Crash)")
 
-    # 3. SCAN PICASSO CHANNEL (New!)
-    # Matches: "Pet: Casper ... Failed" or "Rejected"
-    picasso_failures = await scan_channel(CHANNELS['picasso'], r"Pet:\s*(.*?)\s+.*(?:Error|Failed|Rejected)")
+    # 3. SCAN PICASSO CHANNEL
+    # New Regex: Matches "PETNAME" followed by anything (like 🐶), then a colon, then the name
+    picasso_failures = await scan_channel(CHANNELS['picasso'], r"PETNAME.*:\s*(.*)")
 
     # 4. STRICT MATH LOGIC
     # Combine all "Bad" outcomes
