@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask
 from threading import Thread
 
-# --- PART 1: FAKE WEB SERVER (Keep this for Koyeb) ---
+# --- PART 1: FAKE WEB SERVER (For Koyeb) ---
 app = Flask('')
 
 @app.route('/')
@@ -29,7 +29,6 @@ CHANNELS = {
     'system': 1453090765046681746,    # #system-errors
     'picasso': 1454853444493115522    # #picasso-workflow-failures
 }
-
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
@@ -37,65 +36,67 @@ client = discord.Client(intents=intents)
 @client.event
 async def on_ready():
     print(f'Logged in as {client.user}')
+    print('Available commands: !report (Daily), !weekly (7 Days)')
 
 @client.event
 async def on_message(message):
+    # Daily Report Command
     if message.content == '!report':
-        await generate_full_report(message.channel)
+        await generate_report(message.channel, days=1)
+    
+    # Weekly Report Command
+    elif message.content == '!weekly':
+        await generate_report(message.channel, days=7)
 
-async def scan_channel(channel_id, search_pattern):
+# --- SHARED SCANNING ENGINE ---
+async def scan_channel(channel_id, search_pattern, days_back):
     found_names = set()
     channel = client.get_channel(channel_id)
     
     if not channel:
         return found_names
 
-    # Look back 24 hours
-    after_date = datetime.now(timezone.utc) - timedelta(hours=24)
+    # Dynamic Time Window
+    start_date = datetime.now(timezone.utc) - timedelta(days=days_back)
 
-    async for msg in channel.history(limit=500, after=after_date):
+    # Use limit=None to get EVERYTHING in that timeframe
+    async for msg in channel.history(limit=None, after=start_date):
         text_to_check = msg.content
         if msg.embeds:
             for embed in msg.embeds:
                 text_to_check += " " + str(embed.title) + " " + str(embed.description)
         
-        # Remove bolding for cleaner matching
+        # Clean Text
         text_to_check = text_to_check.replace('*', '')
 
-        # Regex Search
+        # Regex Match
         match = re.search(search_pattern, text_to_check, re.IGNORECASE)
         if match:
             name = match.group(1).strip().lower()
-            found_names.add(name)
+            if name:
+                found_names.add(name)
             
     return found_names
 
-async def generate_full_report(output_channel):
-    await output_channel.send("🕵️‍♀️ conducting full audit across 3 channels... please wait.")
+# --- SHARED REPORT GENERATOR ---
+async def generate_report(output_channel, days):
+    title_text = "📊 Daily Production Report (24h)" if days == 1 else "🗓️ Weekly Production Report (7 Days)"
+    await output_channel.send(f"🕵️‍♀️ Generating **{title_text}**... please wait.")
 
-    # 1. SCAN MAIN CHANNEL (In and Out)
-    submissions = await scan_channel(CHANNELS['main'], r"Pet:\s*(.*?)\s+Submission alert")
-    delivered = await scan_channel(CHANNELS['main'], r"Pet:\s*(.*?)\s+page delivered")
+    # 1. SCAN CHANNELS
+    submissions = await scan_channel(CHANNELS['main'], r"Pet:\s*(.*?)\s+Submission alert", days)
+    delivered = await scan_channel(CHANNELS['main'], r"Pet:\s*(.*?)\s+page delivered", days)
+    system_errors = await scan_channel(CHANNELS['system'], r"Pet:\s*(.*?)\s+.*(?:Error|Failed|Crash)", days)
+    picasso_failures = await scan_channel(CHANNELS['picasso'], r"PETNAME.*:\s*(.*)", days)
 
-    # 2. SCAN SYSTEM ERROR CHANNEL
-    # Matches: "Pet: Casper ... Error" or "Failed"
-    system_errors = await scan_channel(CHANNELS['system'], r"Pet:\s*(.*?)\s+.*(?:Error|Failed|Crash)")
-
-    # 3. SCAN PICASSO CHANNEL
-    # New Regex: Matches "PETNAME" followed by anything (like 🐶), then a colon, then the name
-    picasso_failures = await scan_channel(CHANNELS['picasso'], r"PETNAME.*:\s*(.*)")
-
-    # 4. STRICT MATH LOGIC
-    # Combine all "Bad" outcomes
+    # 2. STRICT MATH LOGIC
     all_failures = system_errors | picasso_failures
-    
-    # "Done" = Successfully Delivered OR Failed/Rejected
     all_finished_items = delivered | all_failures
     
-    # "Pending" = Submitted items that are NOT in the finished list
+    # Pending = Submitted BUT NOT in finished list
     pending_real = submissions - all_finished_items
 
-    # "Cleared" = Total received minus the ones still pending
+    # Cleared = Total received minus the ones still pending
     total_received = len(submissions)
     total_cleared = total_received - len(pending_real)
     
@@ -103,32 +104,34 @@ async def generate_full_report(output_channel):
     if total_received > 0:
         success_rate = round((total_cleared / total_received) * 100)
 
-    # 5. GENERATE REPORT CARD
-    embed = discord.Embed(title="📊 Daily Production Report", color=0x2b2d31)
+    # 3. GENERATE EMBED
+    embed = discord.Embed(title=title_text, color=0x2b2d31)
     
     embed.add_field(name="📥 Received", value=str(total_received), inline=True)
     embed.add_field(name="✅ Processed", value=str(total_cleared), inline=True)
     embed.add_field(name="📈 Success Rate", value=f"{success_rate}%", inline=True)
 
-    # Section for Picasso Failures (Client Errors)
+    # Section for Picasso Failures
     if picasso_failures:
-        p_list = "\n".join([f"• {n.title()}" for n in picasso_failures])
-        embed.add_field(name="🎨 Picasso Failures (Check Data)", value=p_list, inline=False)
+        p_list = "\n".join([f"• {n.title()}" for n in list(picasso_failures)[:15]])
+        if len(picasso_failures) > 15: p_list += f"\n...and {len(picasso_failures)-15} more."
+        embed.add_field(name="🎨 Picasso Rejections", value=p_list, inline=False)
 
-    # Section for System Errors (Bot Crashes)
+    # Section for System Errors
     if system_errors:
-        s_list = "\n".join([f"• {n.title()}" for n in system_errors])
-        embed.add_field(name="🚨 System Errors (Fix Bot)", value=s_list, inline=False)
+        s_list = "\n".join([f"• {n.title()}" for n in list(system_errors)[:15]])
+        if len(system_errors) > 15: s_list += f"\n...and {len(system_errors)-15} more."
+        embed.add_field(name="🚨 System Errors", value=s_list, inline=False)
 
     # Section for Pending
     if pending_real:
-        pend_list = "\n".join([f"• {n.title()}" for n in pending_real])
-        if len(pend_list) > 900: pend_list = pend_list[:900] + "..."
+        pend_list = "\n".join([f"• {n.title()}" for n in list(pending_real)[:20]])
+        if len(pending_real) > 20: pend_list += f"\n...and {len(pending_real)-20} more."
         embed.add_field(name=f"⏳ Pending Queue ({len(pending_real)})", value=pend_list, inline=False)
     else:
         embed.add_field(name="✨ Queue Status", value="All Clear! Zero pending.", inline=False)
 
-    embed.set_footer(text="Analysis covers the last 24h across Main, Error, and Picasso channels.")
+    embed.set_footer(text=f"Analysis period: Last {days} days")
     await output_channel.send(embed=embed)
 
 # --- START ---
